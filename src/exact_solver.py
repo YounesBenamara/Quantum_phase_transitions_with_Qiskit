@@ -13,7 +13,7 @@ def clean(arr, tol=1e-15):
 
 
 N = 6 # qubit number
-
+g=1
 # --- Lattice structure as a graph ---
 def draw_lattice():
     G = nx.Graph()
@@ -39,12 +39,12 @@ def get_hamiltonian(N, g, sparse=True):
         sparse_list.append(("X", [i], -g))
 
     hamiltonian = SparsePauliOp.from_sparse_list(sparse_list, num_qubits=N)
-    return hamiltonian.to_matrix(sparse=sparse)
+    return hamiltonian
 
 #Getting the lowest energy levels
 def compute_lowest_energies(N, g, tol=1e-15):
 
-    H_sparse = get_hamiltonian(N, g, sparse=True)
+    H_sparse = get_hamiltonian(N, g, sparse=True).to_matrix(sparse=True)
     
     #Eigenvalues for the energies and ground state eigenvector for the structure factor S
     vals, vecs = eigsh(H_sparse, k=2, which='SA', return_eigenvectors=True)
@@ -56,7 +56,7 @@ def compute_lowest_energies(N, g, tol=1e-15):
 
 def print_hamiltonian_matrix(N, g):
     #Visualizing the hamiltonian matrix cuz why not
-    H_mat = np.real(get_hamiltonian(N, g, sparse=False))
+    H_mat = np.real(get_hamiltonian(N, g, sparse=False).to_matrix())
     
     np.set_printoptions(precision=3, suppress=True, linewidth=250, threshold=np.inf)
     print(f"\nHamiltonian Matrix (N={N}, g={g}):")
@@ -98,7 +98,7 @@ def vneumann_entropy(psi, trace_out_indices: list):
     return entropy(rho)
 
 if __name__ == "__main__":
-
+    
     g_values = np.linspace(0, 3, 50)
 
  
@@ -122,7 +122,7 @@ if __name__ == "__main__":
     ax_E.legend(fontsize=11)
     ax_E.grid(True, alpha=0.3)
     fig_E.tight_layout()
-    fig_E.savefig(f"figures/energy_density_N={N}.png", dpi=300, bbox_inches='tight')
+    fig_E.savefig(f"figures/exact_solver_figs/energy_density_N={N}.png", dpi=300, bbox_inches='tight')
 
 
     # 2) Structure factor & Von Neumann entropy for multiple N values
@@ -156,7 +156,7 @@ if __name__ == "__main__":
     ax_S.legend(fontsize=11)
     ax_S.grid(True, alpha=0.3)
     fig_S.tight_layout()
-    fig_S.savefig("figures/structure_factor.png", dpi=300, bbox_inches='tight')
+    fig_S.savefig("figures/exact_solver_figs/structure_factor.png", dpi=300, bbox_inches='tight')
 
     # --- Von Neumann entropy plot ---
     ax_SvN.axvline(x=1.0, color="#FF5722", linestyle="--", alpha=0.7, label=r"$g_c = 1$")
@@ -166,4 +166,7 @@ if __name__ == "__main__":
     ax_SvN.legend(fontsize=11)
     ax_SvN.grid(True, alpha=0.3)
     fig_SvN.tight_layout()
-    fig_SvN.savefig("figures/VNeumann_entropy.png", dpi=300, bbox_inches='tight')
+    fig_SvN.savefig("figures/exact_solver_figs/VNeumann_entropy.png", dpi=300, bbox_inches='tight')
+    
+
+    
