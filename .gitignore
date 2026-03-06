@@ -1,3 +1,33 @@
-echo "__pycache__/" > .gitignore
-echo "*.ipynb_checkpoints" >> .gitignore
+# --- Python & Environnement ---
+__pycache__/
+*.py[cod]
+*$py.class
 .venv/
+venv/
+ENV/
+env/
+build/
+dist/
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# --- Données et Résultats (Lourds ou locaux) ---
+src/datasets/
+datasets/
+src/figures/
+figures/
+*.png
+*.pdf
+*.h5
+*.csv
+
+# --- IDE (VS Code / PyCharm) ---
+.vscode/
+.idea/
+.history/
+
+# --- Sécurité & Config (NE JAMAIS PUSHER) ---
+.env
+qiskit-runtime.json
