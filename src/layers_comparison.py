@@ -12,12 +12,12 @@ from vqe_solver import build_hea, ConvergedEarly
 
 # ── Configuration ──────────────────────────────────────────────
 N = 3
-g = 0
+g = 1
 OPTIMIZER = "cobyla"        # "cobyla" or "spsa"
 REAL_ANSATZ = True
 
 LAYERS_LIST = [1, 2, 3, 4]  # layers to compare
-
+g_LIST = [0, 0.1, 0.2, 0.5, 1, 2]
 COBYLA_MAXITER = 120
 COBYLA_RHOBEG  = 0.5
 COBYLA_TOL     = 1e-4
