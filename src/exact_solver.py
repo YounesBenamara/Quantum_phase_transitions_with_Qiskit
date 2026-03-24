@@ -27,6 +27,7 @@ def draw_lattice():
     plt.title(f"TFIM Lattice N={N}")
     plt.show()
 
+
 # --- Lowest two energy levels computation ---
 
 #Building the hamiltonian
@@ -124,7 +125,7 @@ if __name__ == "__main__":
     fig_E.tight_layout()
     fig_E.savefig(f"figures/exact_solver_figs/energy_density_N={N}.png", dpi=300, bbox_inches='tight')
 
-
+'''
     # 2) Structure factor & Von Neumann entropy for multiple N values
    
     N_list = [4, 6, 8, 10, 12, 14]
@@ -169,4 +170,4 @@ if __name__ == "__main__":
     fig_SvN.savefig("figures/exact_solver_figs/VNeumann_entropy.png", dpi=300, bbox_inches='tight')
     
 
-    
+    '''

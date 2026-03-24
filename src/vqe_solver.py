@@ -14,14 +14,14 @@ from exact_solver import get_hamiltonian, compute_lowest_energies
 
 OPTIMIZER   = "cobyla"   # "cobyla" or "spsa"
 REAL_ANSATZ = True     # True = Ry-only (2N params), False = Rz-Rx-Rz (6N params)
-IDEAL       = True     # True = StatevectorEstimator (no noise), False = noisy FakeMarrakesh QPU simulator
+IDEAL       = True  # True = StatevectorEstimator (no noise), False = noisy FakeMarrakesh QPU simulator
 
-N        = 3    # Number of spins
+N        = 4  # Number of spins
 g        = 0.1 # Transverse field force
 N_LAYERS = 1    # Number of HEA repetitions — increase for more expressibility
 
 # Optimizer-specific settings
-COBYLA_MAXITER = 50
+COBYLA_MAXITER = 100
 COBYLA_RHOBEG  = 0.5
 COBYLA_TOL     = 1e-4
 
@@ -36,6 +36,9 @@ SHOTS = 10000   # Only used in noisy mode
 CONV_WINDOW = 10    # Number of recent iterations to check
 CONV_TOL    = 1e-4  # Max std-dev to consider converged
 
+# --- Quick mode (noisy only) ---
+PLOT_LAYOUT_ONLY = True   # True = plot qubit layout and exit (skip VQE)
+
 # ══════════════════════════════════════════════════════════════
 
 #Let there be order
@@ -47,15 +50,6 @@ class ConvergedEarly(Exception):
     def __init__(self, mean_energy, params):
         self.mean_energy = mean_energy
         self.params = params
-
-# --- Output directories ---
-tag = f"{'real' if REAL_ANSATZ else 'general'}_{'ideal' if IDEAL else 'noisy'}_{OPTIMIZER}"
-FIG_DIR = f"figures/vqe_figs/{tag}"
-os.makedirs(FIG_DIR, exist_ok=True)
-
-#Storing parameters to not start from scratch with the noisy fake backend
-if not IDEAL:
-    CHECKPOINT = f"{FIG_DIR}/params_N{N}_g{g}.npy"
 
 
 
@@ -125,8 +119,85 @@ def build_hea(N: int, n_layers: int, real: bool = False) -> tuple[QuantumCircuit
     return qc, params
 
 
+def run_vqe(ansatz, hamiltonian, estimator, initial_params,
+            optimizer="cobyla",
+            cobyla_maxiter=50, cobyla_rhobeg=0.5, cobyla_tol=1e-4,
+            spsa_maxiter=100, spsa_learning_rate=0.05, spsa_perturbation=0.1,
+            conv_window=10, conv_tol=1e-4):
+    '''
+    Run a single VQE optimization.
+
+    Args:
+        ansatz:          Parameterized quantum circuit
+        hamiltonian:     SparsePauliOp Hamiltonian
+        estimator:       Estimator primitive instance
+        initial_params:  Initial parameter array
+        optimizer:       "cobyla" or "spsa"
+        conv_window:     Plateau detection window size
+        conv_tol:        Plateau detection std tolerance
+
+    Returns:
+        (E_vqe, cost_history, converged_early)
+    '''
+    cost_history = []
+
+    def cost_func(params):
+        pub = (ansatz, [hamiltonian], [params])
+        result = estimator.run(pubs=[pub]).result()
+        energy = result[0].data.evs[0]
+        cost_history.append(energy)
+    
+
+        # Plateau-based early stopping
+        if len(cost_history) >= conv_window:
+            recent = cost_history[-conv_window:]
+            if np.std(recent) < conv_tol:
+                mean_e = np.mean(recent)
+                print(f"\n>>> Converged early: last {conv_window} values have "
+                      f"std={np.std(recent):.2e} < tol={conv_tol:.2e}")
+                print(f">>> Plateau mean energy: {mean_e:.6f}")
+                raise ConvergedEarly(mean_e, params)
+        return energy
+
+    converged_early = False
+    try:
+        if optimizer == "cobyla":
+            from scipy.optimize import minimize
+            result = minimize(cost_func, initial_params, method="cobyla",
+                              options={"maxiter": cobyla_maxiter,
+                                       "rhobeg": cobyla_rhobeg,
+                                       "tol": cobyla_tol})
+        elif optimizer == "spsa":
+            from qiskit_algorithms.optimizers import SPSA
+            spsa = SPSA(maxiter=spsa_maxiter,
+                        learning_rate=spsa_learning_rate,
+                        perturbation=spsa_perturbation)
+            result = spsa.minimize(fun=cost_func, x0=initial_params)
+    except ConvergedEarly as e:
+        converged_early = True
+        E_vqe = e.mean_energy
+
+    if not converged_early:
+        # Use plateau mean instead of result.fun — SPSA's last evaluation
+        # can be a perturbation probe, not the actual optimum.
+        if len(cost_history) >= conv_window:
+            E_vqe = np.mean(cost_history[-conv_window:])
+        else:
+            E_vqe = np.mean(cost_history)
+
+    return E_vqe, cost_history, converged_early
+
+
 
 if __name__ == "__main__":
+
+    # --- Output directories ---
+    tag = f"{'real' if REAL_ANSATZ else 'general'}_{'ideal' if IDEAL else 'noisy'}_{OPTIMIZER}"
+    FIG_DIR = f"figures/vqe_figs/{tag}"
+    os.makedirs(FIG_DIR, exist_ok=True)
+
+    if not IDEAL:
+        CHECKPOINT = f"{FIG_DIR}/params_N{N}_g{g}.npy"
 
     #---ANSATZ & BACKEND SETUP---
 
@@ -168,56 +239,40 @@ if __name__ == "__main__":
 
         Hamiltonian_isa = Hamiltonian.apply_layout(layout=ansatz_isa.layout)
 
+        # --- Plot physical qubit layout on QPU ---
+        from qiskit.visualization import plot_gate_map
+
+        physical_qubits = ansatz_isa.layout.final_index_layout(filter_ancillas=True)
+        print(f"Physical qubits : {physical_qubits}")
+
+        qubit_colors = ['#FF4444' if i in physical_qubits else '#DDDDDD'
+                        for i in range(backend.num_qubits)]
+
+        fig_map = plot_gate_map(backend, qubit_color=qubit_colors,
+                                qubit_size=28)
+        fig_map.suptitle(f"Qubits used on {backend.name}: {physical_qubits}", fontsize=13)
+        fig_map.savefig(f"{FIG_DIR}/qubit_layout_N{N}_g{g}.png", dpi=300, bbox_inches='tight')
+        print(f"Qubit layout saved to {FIG_DIR}/qubit_layout_N{N}_g{g}.png")
+
+        # --- Plot circuits ---
+        fig_circ = ansatz.draw('mpl')
+        if fig_circ:
+            fig_circ.savefig(f"{FIG_DIR}/circuit_original_N{N}_g{g}.png", dpi=300, bbox_inches='tight')
+            print(f"Original circuit saved to {FIG_DIR}/circuit_original_N{N}_g{g}.png")
+
+        fig_isa = ansatz_isa.draw('mpl', idle_wires=False)
+        if fig_isa:
+            fig_isa.savefig(f"{FIG_DIR}/circuit_isa_N{N}_g{g}.png", dpi=300, bbox_inches='tight')
+            print(f"ISA circuit saved to {FIG_DIR}/circuit_isa_N{N}_g{g}.png")
+
+        plt.show()
+
+        if PLOT_LAYOUT_ONLY:
+            raise SystemExit(0)
+
         circuit_to_run = ansatz_isa
         hamiltonian_to_run = Hamiltonian_isa
         shots_label = f"{SHOTS}shots"
-
-
-
-    #---COST FUNCTION---
-
-
-    cost_history_dict = {
-        "prev_vector": None,
-        "iters": 0,
-        "cost_history": [],
-    }
-
-
-    def cost_func(params, ansatz, hamiltonian, estimator):
-        """Return estimate of energy from estimator
-
-        Parameters:
-            params (ndarray): Array of ansatz parameters
-            ansatz (QuantumCircuit): Parameterized ansatz circuit
-            hamiltonian (SparsePauliOp): Operator representation of Hamiltonian
-            estimator: Estimator primitive instance
-
-        Returns:
-            float: Energy estimate
-        """
-        pub = (ansatz, [hamiltonian], [params])
-        result = estimator.run(pubs=[pub]).result()
-        energy = result[0].data.evs[0]
-
-        cost_history_dict["iters"] += 1
-        cost_history_dict["prev_vector"] = params
-        cost_history_dict["cost_history"].append(energy)
-        print(f"Iters. done: {cost_history_dict['iters']} [Current cost: {energy}]")
-
-        # --- Plateau-based early stopping ---
-        # looking at the ten latest values and if their standard deviation is under 1e-4
-        history = cost_history_dict["cost_history"]
-        if len(history) >= CONV_WINDOW:
-            recent = history[-CONV_WINDOW:]
-            if np.std(recent) < CONV_TOL:
-                mean_e = np.mean(recent)
-                print(f"\n>>> Converged early: last {CONV_WINDOW} values have "
-                      f"std={np.std(recent):.2e} < tol={CONV_TOL:.2e}")
-                print(f">>> Plateau mean energy: {mean_e:.6f}")
-                raise ConvergedEarly(mean_e, params)
-
-        return energy
 
 
     #---EXACT REFERENCE---
@@ -225,7 +280,6 @@ if __name__ == "__main__":
 
     vals_exact, _ = compute_lowest_energies(N, g)
     E_exact = vals_exact[0]
-    print(f"  Exact energy  : {E_exact:.6f}")
 
 
     #---INITIAL PARAMETERS---
@@ -239,90 +293,25 @@ if __name__ == "__main__":
         print("Starting from random initial params")
 
 
-
     #---OPTIMIZATION---
 
 
-    converged_early = False
-
-    if IDEAL:
-        # --- Ideal: no batch needed ---
-        try:
-            if OPTIMIZER == "cobyla":
-                from scipy.optimize import minimize
-
-                result = minimize(
-                    cost_func,
-                    initial_params,
-                    args=(circuit_to_run, hamiltonian_to_run, estimator),
-                    method="cobyla",
-                    options={"maxiter": COBYLA_MAXITER, "rhobeg": COBYLA_RHOBEG, "tol": COBYLA_TOL},
-                )
-
-            elif OPTIMIZER == "spsa":
-                from qiskit_algorithms.optimizers import SPSA
-
-                spsa = SPSA(maxiter=SPSA_MAXITER, learning_rate=SPSA_LEARNING_RATE,
-                            perturbation=SPSA_PERTURBATION)
-
-                def objective(params):
-                    return cost_func(params, circuit_to_run, hamiltonian_to_run, estimator)
-
-                result = spsa.minimize(fun=objective, x0=initial_params)
-
-        except ConvergedEarly as e:
-            converged_early = True
-            E_converged = e.mean_energy
-            best_params = e.params
-
-    else:
-        # --- Noisy: wrap in Batch ---
+    if not IDEAL:
         batch = Batch(backend=backend)
         estimator = Estimator(mode=batch)
         estimator.options.default_shots = SHOTS
 
-        try:
-            if OPTIMIZER == "cobyla":
-                from scipy.optimize import minimize
-
-                result = minimize(
-                    cost_func,
-                    initial_params,
-                    args=(circuit_to_run, hamiltonian_to_run, estimator),
-                    method="cobyla",
-                    options={"maxiter": COBYLA_MAXITER, "rhobeg": COBYLA_RHOBEG, "tol": COBYLA_TOL},
-                )
-
-            elif OPTIMIZER == "spsa":
-                from qiskit_algorithms.optimizers import SPSA
-
-                spsa = SPSA(maxiter=SPSA_MAXITER, learning_rate=SPSA_LEARNING_RATE,
-                            perturbation=SPSA_PERTURBATION)
-
-                def objective(params):
-                    return cost_func(params, circuit_to_run, hamiltonian_to_run, estimator)
-
-                result = spsa.minimize(fun=objective, x0=initial_params)
-
-        except ConvergedEarly as e:
-            converged_early = True
-            E_converged = e.mean_energy
-            best_params = e.params
-
-        batch.close()
-
-
-
-    if converged_early:
-        E_vqe = E_converged
-        best_params_final = best_params
-    else:
-        E_vqe = result.fun
-        best_params_final = result.x
+    E_vqe, cost_history, converged_early = run_vqe(
+        circuit_to_run, hamiltonian_to_run, estimator, initial_params,
+        optimizer=OPTIMIZER,
+        cobyla_maxiter=COBYLA_MAXITER, cobyla_rhobeg=COBYLA_RHOBEG, cobyla_tol=COBYLA_TOL,
+        spsa_maxiter=SPSA_MAXITER, spsa_learning_rate=SPSA_LEARNING_RATE,
+        spsa_perturbation=SPSA_PERTURBATION,
+        conv_window=CONV_WINDOW, conv_tol=CONV_TOL,
+    )
 
     if not IDEAL:
-        np.save(CHECKPOINT, best_params_final)
-        print(f"Saved optimized params to {CHECKPOINT}")
+        batch.close()
 
 
 
@@ -337,37 +326,35 @@ if __name__ == "__main__":
     if converged_early:
         print(f"  VQE energy    : {E_vqe:.6f}  (plateau mean over last {CONV_WINDOW} iters)")
     else:
-        print(f"  VQE energy    : {E_vqe:.6f}")
+        print(f"  VQE energy    : {E_vqe:.6f}  (mean of last {CONV_WINDOW} iters)")
     print(f"  Relative error: {rel_error*100:.3f} %")
     if converged_early:
         print(f"  Converged     : True (early stop — plateau detected)")
-    elif hasattr(result, 'success'):
-        print(f"  Converged     : {result.success}")
-    print(f"  Iterations    : {cost_history_dict['iters']}")
+    print(f"  Iterations    : {len(cost_history)}")
     print(f"{'─'*40}")
 
 
 
     #---CONVERGENCE PLOT---
 
-    ansatz_label = "Real HEA" if REAL_ANSATZ else "General HEA"
-    sim_label = "Ideal" if IDEAL else "Noisy"
+    ansatz_label = "real HEA" if REAL_ANSATZ else "general HEA"
+    sim_label = "ideal" if IDEAL else "noisy"
     optim_label = OPTIMIZER.upper()
 
     plt.figure(figsize=(10, 5))
-    plt.plot(cost_history_dict["cost_history"],
-             label=f"VQE path ({optim_label}, {sim_label})", color='#0066CC')
+    plt.plot(cost_history,
+             label=f"E_vqe,  err={rel_error*100:.2f}%", color='#0066CC')
     plt.axhline(y=E_exact, color='#FF3300', linestyle='--',
                 label=f"Exact Energy: {E_exact:.4f}")
     if converged_early:
         plt.axhline(y=E_vqe, color='#00AA44', linestyle=':',
                     label=f"Plateau Mean: {E_vqe:.4f}")
-        plt.axvline(x=cost_history_dict["iters"] - 1, color='gray',
+        plt.axvline(x=len(cost_history) - 1, color='gray',
                     linestyle=':', alpha=0.6, label="Early stop")
     plt.xlabel("Iterations")
     plt.ylabel(r"Energy $\langle H \rangle$")
-    plt.title(f"VQE Convergence {optim_label} {sim_label} ({ansatz_label}) "
-              f"- TFIM (N={N}, g={g}, Layers={N_LAYERS})")
+    plt.title(f"VQE Convergence with {ansatz_label}, {optim_label} algorithm on {sim_label} QPU"
+              f" (N={N}, g={g}, Layers={N_LAYERS})")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.savefig(f"{FIG_DIR}/convergence_N{N}_g{g}_{shots_label}.png", dpi=300)
